@@ -20,7 +20,10 @@ let project = Project(
                 "CFBundleDisplayName": .string("MacMonitor"),
                 "LSUIElement": .boolean(true)
             ]),
-            sources: ["Sources/**"]
+            sources: ["Sources/**"],
+            resources: [
+                "Resources/**"
+            ]
         )
     ]
 )

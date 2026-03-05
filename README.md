@@ -13,7 +13,8 @@ It provides:
 - `Sources/Store/ConversationStore.swift`: conversation state, thread lifecycle, streaming messages, approvals.
 - `Sources/Store/MacSystemStore.swift`: periodic macOS telemetry snapshot collector.
 - `Sources/Views/*`: MenuBar chat and status views.
-- `AGENTS.md`: instruction profile used as `developerInstructions` for new threads.
+- `AGENTS.md`: contributor/build contract for this repository.
+- `Resources/AGENTS.md`: bundled runtime instruction profile injected as `developerInstructions` for newly created threads.
 
 ## Local Run
 

@@ -25,10 +25,12 @@ final class ConversationStore {
     private let threadIDDefaultsKey = "macmonitor.thread.id"
     private let workingDirectoryDefaultsKey = "macmonitor.workingDirectory"
     private let workingDirectory: String
-    private let agentsFilePath: String?
+    private let bundledAgentsFilePath: String?
+    private let bundledAgentsInstructions: String?
     private var connectionStatus: ConnectionStatus = .idle
     private var didStart = false
     private var streamingMessageIDByItemID: [String: String] = [:]
+    private var pendingThinkingMessageID: String?
 
     private var session: CodexAppServerSession?
 
@@ -48,9 +50,11 @@ final class ConversationStore {
     var lastErrorMessage: String?
 
     init(workingDirectory: String? = nil) {
-        let resolved = Self.resolveWorkingDirectory(preferred: workingDirectory)
-        self.workingDirectory = resolved.workingDirectory
-        self.agentsFilePath = resolved.agentsFilePath
+        let resolvedWorkingDirectory = Self.resolveWorkingDirectory(preferred: workingDirectory)
+        let bundledAgents = Self.loadBundledAgentsInstructions()
+        self.workingDirectory = resolvedWorkingDirectory
+        self.bundledAgentsFilePath = bundledAgents.path
+        self.bundledAgentsInstructions = bundledAgents.content
 
         UserDefaults.standard.set(self.workingDirectory, forKey: workingDirectoryDefaultsKey)
     }
@@ -60,7 +64,7 @@ final class ConversationStore {
     }
 
     var canSend: Bool {
-        !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
+        !draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isTurnInProgress && !isSending
     }
 
     var hasPendingApprovals: Bool {
@@ -68,8 +72,11 @@ final class ConversationStore {
     }
 
     var instructionsSourceSummary: String {
-        if let agentsFilePath {
-            return URL(fileURLWithPath: agentsFilePath).path
+        if bundledAgentsInstructions != nil {
+            if let bundledAgentsFilePath {
+                return "Bundle (\(bundledAgentsFilePath))"
+            }
+            return "Bundle AGENTS.md"
         }
 
         return "AGENTS.md not found"
@@ -147,18 +154,7 @@ final class ConversationStore {
     }
 
     private var developerInstructions: String? {
-        let fileURL: URL
-        if let agentsFilePath {
-            fileURL = URL(fileURLWithPath: agentsFilePath)
-        } else {
-            fileURL = URL(fileURLWithPath: workingDirectory).appendingPathComponent("AGENTS.md")
-        }
-
-        guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else {
-            return nil
-        }
-
-        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return bundledAgentsInstructions
     }
 
     private func connect() async {
@@ -176,8 +172,12 @@ final class ConversationStore {
         do {
             try await session.start()
             connectionStatus = .connected
-            if let agentsFilePath {
-                appendSystemMessage("Loaded instructions from \(agentsFilePath).")
+            if bundledAgentsInstructions != nil {
+                if let bundledAgentsFilePath {
+                    appendSystemMessage("Loaded bundled instructions from \(bundledAgentsFilePath).")
+                } else {
+                    appendSystemMessage("Loaded bundled instructions.")
+                }
             } else {
                 appendSystemMessage("No AGENTS.md found. Running without custom developer instructions.")
             }
@@ -221,6 +221,7 @@ final class ConversationStore {
         messages.append(ChatMessage(role: .user, text: text))
         isSending = true
         isTurnInProgress = true
+        showThinkingPlaceholderIfNeeded()
 
         do {
             try await session.startTurn(threadID: threadID, text: text)
@@ -228,6 +229,7 @@ final class ConversationStore {
         } catch {
             isSending = false
             isTurnInProgress = false
+            clearThinkingPlaceholder()
             handleError("Failed to send turn: \(error.localizedDescription)")
         }
     }
@@ -255,6 +257,7 @@ final class ConversationStore {
                 activeTurnID = nil
             }
             isTurnInProgress = false
+            clearThinkingPlaceholder()
 
             if status == "failed", let errorMessage {
                 handleError(errorMessage)
@@ -309,6 +312,15 @@ final class ConversationStore {
     }
 
     private func appendAssistantDelta(itemID: String, delta: String) {
+        if let pendingThinkingMessageID,
+           let index = messages.firstIndex(where: { $0.id == pendingThinkingMessageID }) {
+            messages[index].text = delta
+            messages[index].isStreaming = true
+            streamingMessageIDByItemID[itemID] = pendingThinkingMessageID
+            self.pendingThinkingMessageID = nil
+            return
+        }
+
         if let messageID = streamingMessageIDByItemID[itemID],
            let index = messages.firstIndex(where: { $0.id == messageID }) {
             messages[index].text += delta
@@ -327,6 +339,15 @@ final class ConversationStore {
     }
 
     private func finalizeAssistantMessage(itemID: String, text: String) {
+        if let pendingThinkingMessageID,
+           let index = messages.firstIndex(where: { $0.id == pendingThinkingMessageID }) {
+            messages[index].text = text
+            messages[index].isStreaming = false
+            streamingMessageIDByItemID[itemID] = pendingThinkingMessageID
+            self.pendingThinkingMessageID = nil
+            return
+        }
+
         if let messageID = streamingMessageIDByItemID[itemID],
            let index = messages.firstIndex(where: { $0.id == messageID }) {
             messages[index].text = text
@@ -352,10 +373,35 @@ final class ConversationStore {
     private func handleError(_ message: String) {
         connectionStatus = .failed
         lastErrorMessage = message
+        clearThinkingPlaceholder()
         appendSystemMessage("Error: \(message)")
     }
 
-    private static func resolveWorkingDirectory(preferred: String?) -> (workingDirectory: String, agentsFilePath: String?) {
+    private func showThinkingPlaceholderIfNeeded() {
+        guard pendingThinkingMessageID == nil else {
+            return
+        }
+
+        let placeholder = ChatMessage(
+            id: "assistant-thinking-\(UUID().uuidString)",
+            role: .assistant,
+            text: "Thinking...",
+            isStreaming: true
+        )
+        pendingThinkingMessageID = placeholder.id
+        messages.append(placeholder)
+    }
+
+    private func clearThinkingPlaceholder() {
+        guard let pendingThinkingMessageID else {
+            return
+        }
+
+        messages.removeAll(where: { $0.id == pendingThinkingMessageID })
+        self.pendingThinkingMessageID = nil
+    }
+
+    private static func resolveWorkingDirectory(preferred: String?) -> String {
         let fileManager = FileManager.default
         var candidates: [String] = []
 
@@ -384,34 +430,24 @@ final class ConversationStore {
         }
 
         for candidate in normalized where fileManager.fileExists(atPath: candidate) {
-            if let agentsPath = findAgentsFile(startingAtDirectory: candidate) {
-                let directory = URL(fileURLWithPath: agentsPath).deletingLastPathComponent().path
-                return (directory, agentsPath)
-            }
+            return candidate
         }
 
-        for candidate in normalized where fileManager.fileExists(atPath: candidate) {
-            return (candidate, nil)
-        }
-
-        return (FileManager.default.currentDirectoryPath, nil)
+        return FileManager.default.currentDirectoryPath
     }
 
-    private static func findAgentsFile(startingAtDirectory directoryPath: String) -> String? {
-        let fileManager = FileManager.default
-        var currentURL = URL(fileURLWithPath: directoryPath).standardizedFileURL
-
-        while true {
-            let candidate = currentURL.appendingPathComponent("AGENTS.md")
-            if fileManager.fileExists(atPath: candidate.path) {
-                return candidate.path
-            }
-
-            let parentURL = currentURL.deletingLastPathComponent()
-            if parentURL.path == currentURL.path {
-                return nil
-            }
-            currentURL = parentURL
+    private static func loadBundledAgentsInstructions() -> (path: String?, content: String?) {
+        guard let bundledURL = Bundle.main.url(forResource: "AGENTS", withExtension: "md"),
+              let content = try? String(contentsOf: bundledURL, encoding: .utf8)
+        else {
+            return (nil, nil)
         }
+
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return (bundledURL.path, nil)
+        }
+
+        return (bundledURL.path, trimmed)
     }
 }
