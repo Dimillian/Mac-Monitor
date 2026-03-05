@@ -1,0 +1,6 @@
+.DS_Store
+.codex/
+.derived-data/
+Derived/
+*.xcodeproj
+*.xcworkspace
