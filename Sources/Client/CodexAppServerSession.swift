@@ -4,10 +4,10 @@ enum AppServerEvent: Sendable {
     case connected
     case disconnected(String)
     case threadStarted(threadID: String)
-    case turnStarted(turnID: String)
-    case turnCompleted(turnID: String, status: String, errorMessage: String?)
-    case agentMessageDelta(itemID: String, delta: String)
-    case agentMessageCompleted(itemID: String, text: String)
+    case turnStarted(threadID: String, turnID: String)
+    case turnCompleted(threadID: String, turnID: String, status: String, errorMessage: String?)
+    case agentMessageDelta(threadID: String, itemID: String, delta: String)
+    case agentMessageCompleted(threadID: String, itemID: String, text: String)
     case commandApprovalRequest(requestID: Int, itemID: String, command: String?, cwd: String?, reason: String?)
     case fileChangeApprovalRequest(requestID: Int, itemID: String, reason: String?)
     case toolUserInputRequest(requestID: Int, questionIDs: [String])
@@ -333,7 +333,10 @@ actor CodexAppServerSession {
             else {
                 return
             }
-            onEvent(.turnStarted(turnID: turnID))
+            guard let threadID = resolveThreadID(params: params, turn: turn) else {
+                return
+            }
+            onEvent(.turnStarted(threadID: threadID, turnID: turnID))
 
         case "turn/completed":
             guard let turn = params["turn"] as? [String: Any],
@@ -350,26 +353,31 @@ actor CodexAppServerSession {
                 errorMessage = nil
             }
 
-            onEvent(.turnCompleted(turnID: turnID, status: status, errorMessage: errorMessage))
+            guard let threadID = resolveThreadID(params: params, turn: turn) else {
+                return
+            }
+            onEvent(.turnCompleted(threadID: threadID, turnID: turnID, status: status, errorMessage: errorMessage))
 
         case "item/agentMessage/delta":
-            guard let itemID = params["itemId"] as? String,
-                  let delta = params["delta"] as? String
+            guard let itemID = Self.stringValue(params["itemId"] ?? params["item_id"]),
+                  let delta = Self.stringValue(params["delta"]),
+                  let threadID = resolveThreadID(params: params)
             else {
                 return
             }
-            onEvent(.agentMessageDelta(itemID: itemID, delta: delta))
+            onEvent(.agentMessageDelta(threadID: threadID, itemID: itemID, delta: delta))
 
         case "item/completed":
             guard let item = params["item"] as? [String: Any],
                   let type = item["type"] as? String,
                   type == "agentMessage",
-                  let itemID = item["id"] as? String,
-                  let text = item["text"] as? String
+                  let itemID = Self.stringValue(item["id"]),
+                  let text = Self.stringValue(item["text"]),
+                  let threadID = resolveThreadID(params: params, item: item)
             else {
                 return
             }
-            onEvent(.agentMessageCompleted(itemID: itemID, text: text))
+            onEvent(.agentMessageCompleted(threadID: threadID, itemID: itemID, text: text))
 
         case "error":
             if let errorObject = params["error"] as? [String: Any],
@@ -447,6 +455,37 @@ actor CodexAppServerSession {
         }
 
         return threadID
+    }
+
+    private func resolveThreadID(
+        params: [String: Any],
+        turn: [String: Any]? = nil,
+        item: [String: Any]? = nil
+    ) -> String? {
+        if let threadID = Self.stringValue(params["threadId"] ?? params["thread_id"]) {
+            return threadID
+        }
+
+        if let turn, let threadID = Self.stringValue(turn["threadId"] ?? turn["thread_id"]) {
+            return threadID
+        }
+
+        if let item, let threadID = Self.stringValue(item["threadId"] ?? item["thread_id"]) {
+            return threadID
+        }
+
+        return nil
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        guard let string = value as? String else {
+            return nil
+        }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     private static func jsonInt(_ value: Any?) -> Int? {

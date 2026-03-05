@@ -266,14 +266,23 @@ final class ConversationStore {
                 appendSystemMessage(message)
             }
 
-        case .threadStarted(let threadID):
-            applyThreadID(threadID)
+        case .threadStarted(let startedThreadID):
+            if let activeThreadID = threadID, activeThreadID != startedThreadID {
+                return
+            }
+            applyThreadID(startedThreadID)
 
-        case .turnStarted(let turnID):
+        case .turnStarted(let threadID, let turnID):
+            guard shouldHandleEvent(for: threadID) else {
+                return
+            }
             activeTurnID = turnID
             isTurnInProgress = true
 
-        case .turnCompleted(let turnID, let status, let errorMessage):
+        case .turnCompleted(let threadID, let turnID, let status, let errorMessage):
+            guard shouldHandleEvent(for: threadID) else {
+                return
+            }
             if activeTurnID == turnID {
                 activeTurnID = nil
             }
@@ -286,10 +295,16 @@ final class ConversationStore {
                 appendSystemMessage("Turn interrupted.")
             }
 
-        case .agentMessageDelta(let itemID, let delta):
+        case .agentMessageDelta(let threadID, let itemID, let delta):
+            guard shouldHandleEvent(for: threadID) else {
+                return
+            }
             appendAssistantDelta(itemID: itemID, delta: delta)
 
-        case .agentMessageCompleted(let itemID, let text):
+        case .agentMessageCompleted(let threadID, let itemID, let text):
+            guard shouldHandleEvent(for: threadID) else {
+                return
+            }
             finalizeAssistantMessage(itemID: itemID, text: text)
 
         case .commandApprovalRequest(let requestID, let itemID, let command, let cwd, let reason):
@@ -389,6 +404,13 @@ final class ConversationStore {
     private func applyThreadID(_ threadID: String) {
         self.threadID = threadID
         UserDefaults.standard.set(threadID, forKey: threadIDDefaultsKey)
+    }
+
+    private func shouldHandleEvent(for eventThreadID: String) -> Bool {
+        guard let activeThreadID = threadID else {
+            return false
+        }
+        return activeThreadID == eventThreadID
     }
 
     private func handleError(_ message: String) {
