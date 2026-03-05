@@ -40,7 +40,7 @@ struct MessageRowView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            Text(message.text)
+            messageText
                 .textSelection(.enabled)
                 .font(.system(size: 13))
                 .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
@@ -54,6 +54,26 @@ struct MessageRowView: View {
                 Text("streaming...")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var messageText: some View {
+        switch message.role {
+        case .user:
+            Text(message.text)
+        case .assistant, .system:
+            if let markdown = try? AttributedString(
+                markdown: message.text,
+                options: AttributedString.MarkdownParsingOptions(
+                    interpretedSyntax: .inlineOnlyPreservingWhitespace,
+                    failurePolicy: .returnPartiallyParsedIfPossible
+                )
+            ) {
+                Text(markdown)
+            } else {
+                Text(message.text)
             }
         }
     }
